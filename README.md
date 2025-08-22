@@ -1,58 +1,71 @@
+# Virtual Try-On CDK Project
 
-# Welcome to your CDK Python project!
+This project implements a serverless architecture for a virtual try-on
+application using AWS CDK. The architecture includes:
 
-This is a blank project for CDK development with Python.
+1. S3 bucket for image uploads
+2. Lambda function triggered by S3 events
+3. Step Functions workflow for orchestration
+4. Lambda function within the Step Functions workflow
+5. EventBridge for event-driven communication
+6. AppSync API with API Key authentication
+7. CloudWatch for monitoring and logging
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
-
-This project is set up like a standard Python project.  The initialization
-process also creates a virtualenv within this project, stored under the `.venv`
-directory.  To create the virtualenv it assumes that there is a `python3`
-(or `python` for Windows) executable in your path with access to the `venv`
-package. If for any reason the automatic creation of the virtualenv fails,
-you can create the virtualenv manually.
-
-To manually create a virtualenv on MacOS and Linux:
-
-```
-$ python3 -m venv .venv
-```
-
-After the init process completes and the virtualenv is created, you can use the following
-step to activate your virtualenv.
+## Architecture Overview
 
 ```
-$ source .venv/bin/activate
+┌─────────┐     ┌──────────┐     ┌───────────────┐     ┌──────────────┐
+│  S3     │────▶│  Lambda  │────▶│ Step Functions│────▶│ Lambda       │
+│ Bucket  │     │ Trigger  │     │   Workflow    │     │ (Processing) │
+└─────────┘     └──────────┘     └───────────────┘     └──────┬───────┘
+                                                              │
+                                                              ▼
+┌─────────┐     ┌──────────┐                           ┌──────────────┐
+│ AppSync │◀────│EventBridge│◀──────────────────────────│ EventBridge  │
+│   API   │     │  Target   │                           │    Events    │
+└─────────┘     └──────────┘                           └──────────────┘
+                      │                                       │
+                      │                                       │
+                      ▼                                       ▼
+                ┌──────────┐                           ┌──────────────┐
+                │CloudWatch│                           │ CloudWatch   │
+                │  Logs    │                           │    Logs      │
+                └──────────┘                           └──────────────┘
 ```
 
-If you are a Windows platform, you would activate the virtualenv like this:
+## Project Structure
+
+- `virtual_tryon_cdk/` - CDK stack definition
+- `lambda/s3_trigger/` - Lambda function triggered by S3 events
+- `lambda/workflow/` - Lambda function invoked by Step Functions
+- `graphql/` - AppSync GraphQL schema
+
+## Deployment
+
+1. Install dependencies:
 
 ```
-% .venv\Scripts\activate.bat
+pip install -r requirements.txt
 ```
 
-Once the virtualenv is activated, you can install the required dependencies.
+2. Deploy the stack:
 
 ```
-$ pip install -r requirements.txt
+cdk deploy
 ```
 
-At this point you can now synthesize the CloudFormation template for this code.
+## Testing the Application
 
-```
-$ cdk synth
-```
+1. Upload an image to the S3 bucket
+2. The S3 trigger Lambda will start the Step Functions workflow
+3. The workflow Lambda will process the image and send events to EventBridge
+4. EventBridge will forward events to AppSync and CloudWatch
+5. Query the AppSync API to get the processing results
 
-To add additional dependencies, for example other CDK libraries, just add
-them to your `setup.py` file and rerun the `pip install -r requirements.txt`
-command.
+## Useful Commands
 
-## Useful commands
-
- * `cdk ls`          list all stacks in the app
- * `cdk synth`       emits the synthesized CloudFormation template
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk docs`        open CDK documentation
-
-Enjoy!
+- `cdk ls` list all stacks in the app
+- `cdk synth` emits the synthesized CloudFormation template
+- `cdk deploy` deploy this stack to your default AWS account/region
+- `cdk diff` compare deployed stack with current state
+- `cdk docs` open CDK documentation

@@ -1,2 +1,7 @@
 aws-cdk-lib==2.208.0
 constructs>=10.0.0,<11.0.0
+aws-cdk.aws-lambda-python-alpha==2.175.1a0
+cdklabs.generative-ai-cdk-constructs==0.1.300
+aws-cdk.aws-codestar-alpha==2.175.1a0
+pre-commit==4.1.0
+ruff==0.9.1
