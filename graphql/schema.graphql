@@ -1,15 +1,9 @@
 type Query {
-  getProcessingResult(id: ID!): ProcessingResult @aws_iam @aws_api_key
-  listProcessingResults(
-    limit: Int
-    nextToken: String
-  ): ProcessingResultConnection @aws_api_key
+
 }
 
 type Mutation {
-  startProcessing(input: StartProcessingInput!): ProcessingResult
-    @aws_iam
-    @aws_api_key
+
   generateImageResponse(input: ProcessingResultInput): ProcessingResult
     @aws_iam
     @aws_api_key
@@ -21,15 +15,7 @@ type Subscription {
     @aws_subscribe(mutations: ["generateImageResponse"])
 }
 
-type GeneratedImageResponse @aws_iam @aws_api_key {
-  base64Images: [String!]!
-}
 
-input StartProcessingInput @aws_iam @aws_api_key {
-  id: ID
-  imageKey: String!
-  processingType: String!
-}
 
 input ProcessingResultInput @aws_iam @aws_api_key {
   id: ID!
@@ -48,11 +34,6 @@ type ProcessingResult @aws_iam @aws_api_key {
   resultUrl: String!
   processingType: String!
 
-}
-
-type ProcessingResultConnection @aws_api_key {
-  items: [ProcessingResult]
-  nextToken: String
 }
 
 enum ProcessingStatus @aws_iam @aws_api_key {
