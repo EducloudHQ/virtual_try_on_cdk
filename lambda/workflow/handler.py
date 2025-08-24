@@ -7,6 +7,7 @@ import json
 import boto3
 from aws_lambda_powertools import Logger, Tracer
 
+
 # Create the Bedrock Runtime client.
 bedrock = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
 
@@ -73,10 +74,11 @@ def handler(event, context):
     Returns:
         Dictionary with processing results
     """
+    logger.info(f"Received S3 event: {event}")
     now = datetime.now(timezone.utc)
     try:
         # Log the received event
-        print(f"Received event from Step Functions: {json.dumps(event)}")
+        logger.info(f"Received event from Step Functions: {json.dumps(event)}")
 
         # Extract data from the event
         execution_id = event.get("id", str(uuid.uuid4()))
@@ -90,17 +92,17 @@ def handler(event, context):
             raise ValueError("No reference image was provided")
 
         if key.startswith("results/"):  # must match OUTPUT_PREFIX
-            print("must match output prefix")
+            logger.info("must match output prefix")
             return {"skipped": True}
 
-        print(f"Processing image: {key} from bucket: {bucket}")
+        logger.info(f"Processing image: {key} from bucket: {bucket}")
 
         source_base_64 = s3_image_to_base64(bucket, key)
         reference_img_base_64 = s3_image_to_base64(bucket, reference_img)
 
-        print(f"this is the reference base 64 image {reference_img_base_64[:50]}")
+        logger.info(f"this is the reference base 64 image {reference_img_base_64[:50]}")
 
-        print(f"this is the source base 64 {source_base_64[:50]}")
+        logger.info(f"this is the source base 64 {source_base_64[:50]}")
 
         inference_params = {
             "taskType": "VIRTUAL_TRY_ON",
@@ -113,7 +115,7 @@ def handler(event, context):
         }
 
         # Simulate image processing
-        print("Starting image processing...")
+        logger.info("Starting image processing...")
         # Prepare the invocation payload.
         body_json = json.dumps(inference_params, indent=2)
 
@@ -129,11 +131,11 @@ def handler(event, context):
         response_body_json = json.loads(response.get("body").read())
         images = response_body_json.get("images", [])
 
-        print(f"images are {images}")
+        logger.info(f"images are {images}")
 
         # Check for errors.
         if response_body_json.get("error"):
-            print(response_body_json.get("error"))
+            logger.info(response_body_json.get("error"))
 
         for index, image_base64 in enumerate(images):
             # 1. Clean + decode base64
@@ -150,7 +152,7 @@ def handler(event, context):
                 ContentType="image/png",
             )
 
-            print(f"Uploaded s3://{bucket}/{key}")
+            logger.info(f"Uploaded s3://{bucket}/{key}")
 
         # In a real implementation, this is where you would process the image
         # For example, using Amazon Rekognition, Bedrock, or other services
@@ -159,20 +161,25 @@ def handler(event, context):
         result_url = (
             f"https://{bucket}.s3.amazonaws.com/{key.replace('input', 'output')}"
         )
+        # Generate pre-signed URL
+        presigned_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=3600,
+        )
 
         # Prepare the processing result
         processing_result = {
             "id": execution_id,
             "imageKey": key,
             "status": "COMPLETED",
+            "presigned_url": presigned_url,
             "resultUrl": result_url,
             "processingType": "VIRTUAL_TRY_ON",
-            "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "updatedAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         }
 
         # Send event to EventBridge
-        print(f"Sending event to EventBridge bus: {EVENT_BUS_NAME}")
+        logger.info(f"Sending event to EventBridge bus: {EVENT_BUS_NAME}")
 
         response = events_client.put_events(
             Entries=[
@@ -185,14 +192,14 @@ def handler(event, context):
             ]
         )
 
-        print(f"EventBridge response: {json.dumps(response)}")
+        logger.info(f"EventBridge response: {json.dumps(response)}")
 
         # Return the processing result
         return processing_result
 
     except Exception as e:
         error_message = f"Error processing image: {str(e)}"
-        print(error_message)
+        logger.info(error_message)
 
         # Send failure event to EventBridge
         failure_result = {
@@ -217,7 +224,9 @@ def handler(event, context):
                 ]
             )
         except Exception as event_error:
-            print(f"Failed to send error event to EventBridge: {str(event_error)}")
+            logger.info(
+                f"Failed to send error event to EventBridge: {str(event_error)}"
+            )
 
         # Re-raise the exception to mark the Lambda as failed
         raise e

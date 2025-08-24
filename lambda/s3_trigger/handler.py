@@ -4,6 +4,16 @@ import uuid
 from urllib.parse import unquote_plus
 
 import boto3
+from aws_lambda_powertools import Logger, Tracer
+
+
+from aws_lambda_powertools.utilities.data_classes import event_source, S3Event
+
+# Create the Bedrock Runtime client.
+bedrock = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+
+logger = Logger(service="invoke_agent_lambda")
+tracer = Tracer(service="invoke_agent_lambda")
 
 # AWS clients
 sfn_client = boto3.client("stepfunctions")
@@ -21,7 +31,10 @@ T_SHIRTS = [
 ]
 
 
-def handler(event, context):
+@event_source(data_class=S3Event)
+@logger.inject_lambda_context
+@tracer.capture_lambda_handler
+def handler(event: S3Event, context):
     """
     For each S3 ObjectCreated record, invoke the Step Functions workflow once
     per T_SHIRTS item. The workflow input includes:
@@ -34,15 +47,15 @@ def handler(event, context):
     executions = []
 
     try:
-        # Helpful for debugging; keep logs small
-        print("Received event with %d record(s)" % len(event.get("Records", [])))
+        logger.info(f"Received S3 event: {event}")
 
-        for record in event.get("Records", []):
-            bucket = record["s3"]["bucket"]["name"]
-            key = unquote_plus(record["s3"]["object"]["key"])
+        for record in event.records:
+            logger.info(f"Record: {record}")
+            bucket = record.s3.bucket.name
+            key = unquote_plus(record.s3.get_object.key)
             timestamp = record.get("eventTime")  # already RFC3339 from S3
 
-            print(f"Processing s3://{bucket}/{key}")
+            logger.info(f"Processing s3://{bucket}/{key}")
 
             for ref in T_SHIRTS:
                 execution_id = str(uuid.uuid4())
@@ -76,7 +89,7 @@ def handler(event, context):
                     }
                 )
 
-                print(f"Started execution for {ref}: {resp['executionArn']}")
+                logger.info(f"Started execution for {ref}: {resp['executionArn']}")
 
         return {
             "statusCode": 200,
@@ -85,6 +98,6 @@ def handler(event, context):
         }
 
     except Exception as e:
-        print(f"Error starting state machine(s): {e}")
+        logger.error(f"Error starting state machine(s): {e}")
         # Let Lambda fail so retries/DLQ can catch it
         raise

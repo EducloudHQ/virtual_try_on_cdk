@@ -296,7 +296,7 @@ class VirtualTryonCdkStack(Stack):
                     app_sync_parameters=events.CfnRule.AppSyncParametersProperty(
                         graph_ql_operation="mutation GenerateImageResponse($input: ProcessingResultInput) { "
                         "generateImageResponse(input: $input) { "
-                        "id imageKey status resultUrl processingType"
+                        "id imageKey status resultUrl presigned_url processingType"
                         "} }",
                     ),
                 ),
