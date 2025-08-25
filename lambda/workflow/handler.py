@@ -1,6 +1,5 @@
 import os
 import uuid
-from datetime import datetime, timezone
 import base64
 import json
 
@@ -75,7 +74,6 @@ def handler(event, context):
         Dictionary with processing results
     """
     logger.info(f"Received S3 event: {event}")
-    now = datetime.now(timezone.utc)
     try:
         # Log the received event
         logger.info(f"Received event from Step Functions: {json.dumps(event)}")
@@ -208,8 +206,6 @@ def handler(event, context):
             "status": "FAILED",
             "error": error_message,
             "processingType": "VIRTUAL_TRY_ON",
-            "createdAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-            "updatedAt": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         }
 
         try:

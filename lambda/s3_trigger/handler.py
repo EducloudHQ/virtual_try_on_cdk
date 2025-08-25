@@ -27,7 +27,7 @@ T_SHIRTS = [
     "green_t.png",
     "lined_t.png",
     "red_t.png",
-    "yello_t.png",
+    "yellow_t.png",
 ]
 
 
@@ -36,7 +36,7 @@ T_SHIRTS = [
 @tracer.capture_lambda_handler
 def handler(event: S3Event, context):
     """
-    For each S3 ObjectCreated record, invoke the Step Functions workflow once
+    For each S3 ObjectCreated record inside the 'incoming/' folder, invoke the Step Functions workflow once
     per T_SHIRTS item. The workflow input includes:
       - id: unique execution id
       - bucket: source bucket (from event)
@@ -92,7 +92,6 @@ def handler(event: S3Event, context):
                 logger.info(f"Started execution for {ref}: {resp['executionArn']}")
 
         return {
-            "statusCode": 200,
             "executions": executions,
             "count": len(executions),
         }

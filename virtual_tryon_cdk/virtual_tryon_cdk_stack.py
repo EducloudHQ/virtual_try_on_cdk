@@ -168,9 +168,6 @@ class VirtualTryonCdkStack(Stack):
             )
         )
 
-        # Add Lambda as a DataSource for AppSync
-        lambda_ds = api.add_lambda_data_source("LambdaDataSource", s3_trigger_lambda)
-
         # Define None DataSource
         none_data_source = appsync.CfnDataSource(
             self,
@@ -198,14 +195,6 @@ class VirtualTryonCdkStack(Stack):
                        }
                    """,
             response_mapping_template="$util.toJson($context.arguments.input)",
-        )
-
-        lambda_ds.create_resolver(
-            id="StartStateMachineWorkflowResolver",
-            type_name="Mutation",
-            field_name="startProcessing",
-            request_mapping_template=appsync.MappingTemplate.lambda_request(),
-            response_mapping_template=appsync.MappingTemplate.lambda_result(),
         )
 
         # Define
