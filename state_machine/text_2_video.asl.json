@@ -1,0 +1,111 @@
+{
+  "Comment": "This state machine generates video from a given text using amazon nova reel-v1",
+  "StartAt": "StartAsyncInvoke",
+  "States": {
+    "StartAsyncInvoke": {
+      "Type": "Task",
+      "Arguments": {
+        "ModelId": "amazon.nova-reel-v1:0",
+        "ModelInput": {
+          "taskType": "TEXT_VIDEO",
+          "textToVideoParams": {
+            "text": "{% $states.input.user_prompt %}"
+          },
+          "videoGenerationConfig": {
+            "durationSeconds": 6,
+            "fps": 24,
+            "dimension": "1280x720",
+            "seed": 400
+          }
+        },
+        "OutputDataConfig": {
+          "S3OutputDataConfig": {
+            "S3Uri": "{% $states.input.bucketUri %}"
+          }
+        }
+      },
+      "Resource": "arn:aws:states:::aws-sdk:bedrockruntime:startAsyncInvoke",
+      "Next": "Wait",
+      "Assign": {
+        "video_arn": "{% $states.result.InvocationArn %}",
+        "s3BucketUri": "{% $states.input.bucketUri %}",
+        "folder": "{% $states.input.folderUUID %}"
+      }
+    },
+    "Wait": {
+      "Type": "Wait",
+      "Seconds": 20,
+      "Next": "GetAsyncInvoke",
+      "Output": {}
+    },
+    "GetAsyncInvoke": {
+      "Type": "Task",
+      "Arguments": {
+        "InvocationArn": "{% $video_arn %}"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:bedrockruntime:getAsyncInvoke",
+      "Next": "Choice"
+    },
+    "Choice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Next": "Wait",
+          "Condition": "{% ($states.input.Status) = (\"InProgress\") %}"
+        },
+        {
+          "Next": "Pass",
+          "Condition": "{% ($states.input.Status) = (\"Completed\") %}"
+        }
+      ],
+      "Default": "Fail"
+    },
+    "Pass": {
+      "Type": "Pass",
+      "Next": "DynamoDB PutItem",
+      "Output": {
+        "S3Bucket": "{% $states.input.OutputDataConfig.S3OutputDataConfig.S3Uri %}"
+      },
+      "Assign": {
+        "S3Bucket": "{% $states.input.OutputDataConfig.S3OutputDataConfig.S3Uri %}"
+      }
+    },
+    "DynamoDB PutItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${DYNAMO_DB_TABLE}",
+        "Item": {
+          "id": {
+            "S": "{%  $folder %}"
+          },
+
+          "contentType": {
+            "S": "VIDEO"
+          },
+          "s3BucketUriPlusKey": {
+            "S": "{% $states.input.S3Bucket & '/output.mp4' %}"
+          },
+
+          "folder": {
+            "S": "{% $folder %}"
+          },
+          "video": {
+            "S": "output.mp4"
+          },
+          "createdOn": {
+            "N": "{% $string($toMillis($now())) %}"
+          }
+        }
+      },
+      "Next": "Success"
+    },
+    "Fail": {
+      "Type": "Fail"
+    },
+    "Success": {
+      "Type": "Succeed"
+    }
+  },
+  "QueryLanguage": "JSONata"
+}

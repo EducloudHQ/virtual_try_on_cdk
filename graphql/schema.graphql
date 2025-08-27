@@ -1,12 +1,14 @@
 type Query {
-
+  getImageList(nextToken: String): ImageListsResult! @aws_api_key
 }
 
 type Mutation {
-
-  generateImageResponse(input: ProcessingResultInput): ProcessingResult
+  generateImageResponse(input: ProcessingResultInput!): ProcessingResult
     @aws_iam
     @aws_api_key
+
+  text2Image(input: String!): Boolean @aws_api_key
+  text2Video(input: String!): Boolean @aws_api_key
 }
 
 type Subscription {
@@ -15,28 +17,42 @@ type Subscription {
     @aws_subscribe(mutations: ["generateImageResponse"])
 }
 
+type ImageLists @aws_api_key {
+  id: String!
+  contentType: String!
+  imageListString: [ImageItem!]!
+}
 
+type ImageItem @aws_api_key {
+  prompt: String!
+  fileName: String!
+  presigned_url: String!
+}
 
-input ProcessingResultInput @aws_iam @aws_api_key {
+type ImageListsResult @aws_api_key {
+  items: [ImageLists!]!
+  nextToken: String
+}
+
+input ProcessingResultInput {
   id: ID!
   imageKey: String
   status: ProcessingStatus!
-  presigned_url:String!
+  presigned_url: String!
   resultUrl: String!
   processingType: String!
 }
 
-type ProcessingResult @aws_iam @aws_api_key {
+type ProcessingResult @aws_api_key @aws_iam {
   id: ID!
   imageKey: String!
   status: ProcessingStatus!
-  presigned_url:String!
+  presigned_url: String!
   resultUrl: String!
   processingType: String!
-
 }
 
-enum ProcessingStatus @aws_iam @aws_api_key {
+enum ProcessingStatus {
   PENDING
   PROCESSING
   COMPLETED

@@ -1,3 +1,5 @@
+import json
+
 from aws_cdk import (
     Duration,
     Stack,
@@ -12,19 +14,22 @@ from aws_cdk import (
     aws_events as events,
     aws_appsync as appsync,
     aws_logs as logs,
+    aws_dynamodb as dynamodb,
 )
 import aws_cdk as cdk
 from aws_cdk.aws_lambda import Tracing
 from aws_cdk.aws_lambda_python_alpha import PythonFunction
-from aws_cdk.aws_stepfunctions import DefinitionBody
+from aws_cdk.aws_stepfunctions import DefinitionBody, StateMachineType
 from constructs import Construct
+
+INPUT_PREFIX = "incoming/"
 
 
 class VirtualTryonCdkStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
         # define prefixes
-        INPUT_PREFIX = "incoming/"
+
         # OUTPUT_PREFIX = "results/"
         COMMON_LAMBDA_ENV_VARS = {
             "POWERTOOLS_SERVICE_NAME": "virtual-try-on",
@@ -33,6 +38,16 @@ class VirtualTryonCdkStack(Stack):
             "POWERTOOLS_LOGGER_LOG_EVENT": "true",
             "POWERTOOLS_METRICS_NAMESPACE": "VirtualTryOnApp",
         }
+        nova_creative_db = dynamodb.Table(
+            self,
+            "NovaCreativeApplications",
+            table_name="nova-creative-db",
+            partition_key=dynamodb.Attribute(
+                name="id", type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=RemovalPolicy.DESTROY,  # Use RETAIN for production
+        )
 
         # Create S3 bucket for image uploads
         upload_bucket = s3.Bucket(
@@ -87,22 +102,6 @@ class VirtualTryonCdkStack(Stack):
             timeout=Duration.minutes(15),
         )
 
-        workflow_lambda.add_to_role_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "bedrock:InvokeModel",
-                    "bedrock:InvokeAgent",
-                    "bedrock:RetrieveAndGenerate",
-                    "bedrock:Retrieve",
-                    "bedrock:ListAgents",
-                    "bedrock:GetAgent",
-                    "bedrock:InvokeModelWithResponseStream",
-                ],
-                resources=["*"],
-                # Grant access to all Bedrock models
-            )
-        )
-
         # Create Step Functions workflow
         workflow_task = tasks.LambdaInvoke(
             self,
@@ -136,7 +135,7 @@ class VirtualTryonCdkStack(Stack):
             self,
             "VirtualTryonWorkflow",
             definition_body=DefinitionBody.from_chainable(chain),
-            timeout=Duration.days(365),
+            state_machine_type=StateMachineType.EXPRESS,
         )
 
         # Create Lambda function that will be triggered by S3
@@ -156,7 +155,168 @@ class VirtualTryonCdkStack(Stack):
             timeout=Duration.seconds(30),
         )
 
-        # Grant S3 bucket permissions to the Lambda function
+        # Create Lambda function that will be triggered by S3
+        text_2_image_lambda = PythonFunction(
+            self,
+            "Text2ImageLambdaFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            entry="./lambda/text_2_image",
+            index="handler.py",
+            handler="handler",
+            tracing=Tracing.ACTIVE,
+            environment={
+                **COMMON_LAMBDA_ENV_VARS,
+                "BUCKET_NAME": upload_bucket.bucket_name,
+            },
+            timeout=Duration.seconds(30),
+        )
+
+        # Create Lambda function that will be triggered by S3
+        get_imageList_lambda = PythonFunction(
+            self,
+            "GetImageListLambdaFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            entry="./lambda/retrieve_images",
+            index="handler.py",
+            handler="handler",
+            tracing=Tracing.ACTIVE,
+            environment={
+                **COMMON_LAMBDA_ENV_VARS,
+                "TABLE_NAME": nova_creative_db.table_name,
+            },
+            timeout=Duration.seconds(30),
+        )
+        log_group = logs.LogGroup(
+            self,
+            "ExpressSmLogs",
+            retention=logs.RetentionDays.ONE_WEEK,  # adjust as needed
+            removal_policy=RemovalPolicy.DESTROY,  # keep RETAIN for prod
+        )
+        # Load the ASL definition for text 2 image from the JSON file
+        with open("./state_machine/text_2_image.asl.json", "r") as file:
+            state_machine_definition = json.load(file)
+        # Load the ASL definition from the JSON file
+        with open("./state_machine/text_2_video.asl.json", "r") as file:
+            text_2_video_state_machine_definition = json.load(file)
+        text_2_video_state_machine = sfn.StateMachine(
+            self,
+            "Text2VideoStateMachineWorkflow",
+            definition_body=sfn.DefinitionBody.from_string(
+                json.dumps(text_2_video_state_machine_definition)
+            ),
+            definition_substitutions={"DYNAMO_DB_TABLE": nova_creative_db.table_name},
+            logs=sfn.LogOptions(
+                destination=log_group,
+                level=sfn.LogLevel.ALL,  # OFF | ERROR | ALL
+                include_execution_data=True,  # include input/output in log events
+            ),
+            tracing_enabled=True,
+            state_machine_type=StateMachineType.EXPRESS,
+        )
+
+        text_2_image_state_machine = sfn.StateMachine(
+            self,
+            "Text2ImageStateMachineWorkflow",
+            definition_body=sfn.DefinitionBody.from_string(
+                json.dumps(state_machine_definition)
+            ),
+            definition_substitutions={
+                "DYNAMO_DB_TABLE": nova_creative_db.table_name,
+                "INVOKE_LAMBDA_FUNCTION_ARN": text_2_image_lambda.function_arn,
+            },
+            logs=sfn.LogOptions(
+                destination=log_group,
+                level=sfn.LogLevel.ALL,  # OFF | ERROR | ALL
+                include_execution_data=True,  # include input/output in log events
+            ),
+            tracing_enabled=True,
+            state_machine_type=StateMachineType.EXPRESS,
+        )
+
+        # Create Lambda function that will invoke the text 2 image state machine
+        invoke_text_2_video_state_machine = PythonFunction(
+            self,
+            "InvokeText2VideoStateMachineFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            entry="./lambda/text_2_video",
+            index="invoke_state_machine.py",
+            tracing=Tracing.ACTIVE,
+            environment={
+                **COMMON_LAMBDA_ENV_VARS,
+                "TEXT_2_VIDEO_STATE_MACHINE_ARN": text_2_video_state_machine.state_machine_arn,
+                "BUCKET_NAME": upload_bucket.bucket_name,
+            },
+            timeout=Duration.seconds(30),
+        )
+
+        # Create Lambda function that will invoke the text 2 image state machine
+        invoke_state_machine_lambda = PythonFunction(
+            self,
+            "InvokeText2ImageStateMachineFunction",
+            runtime=lambda_.Runtime.PYTHON_3_13,
+            entry="./lambda/text_2_image",
+            index="invoke_state_machine.py",
+            tracing=Tracing.ACTIVE,
+            environment={
+                **COMMON_LAMBDA_ENV_VARS,
+                "TEXT_2_IMAGE_STATE_MACHINE_ARN": text_2_image_state_machine.state_machine_arn,
+                "BUCKET_NAME": upload_bucket.bucket_name,
+            },
+            timeout=Duration.seconds(30),
+        )
+        text_2_image_lambda.grant_invoke(text_2_image_state_machine)
+        text_2_video_state_machine.grant_start_execution(
+            invoke_text_2_video_state_machine
+        )
+        nova_creative_db.grant_write_data(text_2_video_state_machine)
+        upload_bucket.grant_read_write(text_2_video_state_machine)
+        nova_creative_db.grant_read_data(get_imageList_lambda)
+
+        text_2_video_state_machine.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:StartAsyncInvoke",
+                    "bedrock:GetAsyncInvoke",
+                ],
+                resources=["*"],
+            )
+        )
+
+        text_2_image_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeAgent",
+                    "bedrock:RetrieveAndGenerate",
+                    "bedrock:Retrieve",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                resources=["*"],
+                # Grant access to all Bedrock models
+            )
+        )
+
+        workflow_lambda.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "bedrock:InvokeModel",
+                    "bedrock:InvokeAgent",
+                    "bedrock:RetrieveAndGenerate",
+                    "bedrock:Retrieve",
+                    "bedrock:ListAgents",
+                    "bedrock:GetAgent",
+                    "bedrock:InvokeModelWithResponseStream",
+                ],
+                resources=["*"],
+                # Grant access to all Bedrock models
+            )
+        )
+        text_2_image_state_machine.grant_start_execution(invoke_state_machine_lambda)
+        upload_bucket.grant_write(text_2_image_lambda)
+        nova_creative_db.grant_write_data(text_2_image_state_machine)
+
+        # Grant S3 bucket permissions to the s3 Lambda function
         upload_bucket.grant_read(s3_trigger_lambda)
 
         # Add S3 event source to Lambda
@@ -168,36 +328,66 @@ class VirtualTryonCdkStack(Stack):
             )
         )
 
-        # Define None DataSource
-        none_data_source = appsync.CfnDataSource(
-            self,
-            "VirtualTryOnNoneDatasource",
-            api_id=api.api_id,
-            name="NoneDataSource",
-            type="NONE",
-            description="None",
+        # Add Lambda as a DataSource for AppSync
+        text_2_image_lambda_ds = api.add_lambda_data_source(
+            "Text2ImageLambdaDataSource", invoke_state_machine_lambda
+        )
+        text_2_video_lambda_ds = api.add_lambda_data_source(
+            "Text2VideoLambdaDataSource", invoke_text_2_video_state_machine
+        )
+        retrieve_images_lambda_ds = api.add_lambda_data_source(
+            "RetrieveImagesLambdaDataSource", get_imageList_lambda
         )
 
-        # Define Mutation Resolver
-        appsync.CfnResolver(
-            self,
-            "GenerateImageResponseMutationResolver",
-            api_id=api.api_id,
+        none_ds = api.add_none_data_source("NoneDatasource")
+
+        # none_ds is a NoneDataSource from: none_ds = api.add_none_data_source("NoneDataSource")
+
+        none_ds.create_resolver(
+            "GenerateImageResponseResolver",
             type_name="Mutation",
             field_name="generateImageResponse",
-            data_source_name=none_data_source.name,
-            request_mapping_template="""
-                       {
-                         "version": "2017-02-28",
-                         "payload": {
-
-                         }
-                       }
-                   """,
-            response_mapping_template="$util.toJson($context.arguments.input)",
+            # For a NONE data source, the request template isn't used to call anything.
+            # Keep it minimal and do the real return in the response template.
+            request_mapping_template=appsync.MappingTemplate.from_string(
+                """
+                {
+                  "version": "2017-02-28",
+                  "payload": {}
+                }
+                """
+            ),
+            response_mapping_template=appsync.MappingTemplate.from_string(
+                "$util.toJson($context.arguments.input)"
+            ),
         )
 
-        # Define
+        # Define Resolvers
+        text_2_image_lambda_ds.create_resolver(
+            "Text2ImageLambdaResolver",
+            type_name="Mutation",
+            field_name="text2Image",
+            request_mapping_template=appsync.MappingTemplate.lambda_request(),
+            response_mapping_template=appsync.MappingTemplate.lambda_result(),
+        )
+
+        # Define Resolvers
+        text_2_video_lambda_ds.create_resolver(
+            "Text2VideoLambdaResolver",
+            type_name="Mutation",
+            field_name="text2Video",
+            request_mapping_template=appsync.MappingTemplate.lambda_request(),
+            response_mapping_template=appsync.MappingTemplate.lambda_result(),
+        )
+
+        # Define Resolvers
+        retrieve_images_lambda_ds.create_resolver(
+            "RetrieveImagesLambdaResolver",
+            type_name="Query",
+            field_name="getImageList",
+            request_mapping_template=appsync.MappingTemplate.lambda_request(),
+            response_mapping_template=appsync.MappingTemplate.lambda_result(),
+        )
 
         # Grant permissions to the workflow Lambda
         upload_bucket.grant_read_write(workflow_lambda)
